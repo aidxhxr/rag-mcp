@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { SignInButton, UserButton, useAuth, useUser } from "@clerk/nextjs";
 
 const navItems = [
   { label: "Library", href: "/" },
@@ -12,8 +13,10 @@ const navItems = [
 
 const Navbar = () => {
   const pathName = usePathname();
+  const { user } = useUser();
+  const { isSignedIn, isLoaded } = useAuth();
   return (
-    <header className="w-full fixed z-50 bg-('--bg-primary')">
+    <header className="w-full fixed z-50 bg-(--bg-primary)">
       <div className="wrapper navbar-height py-4 flex justify-between items-center">
         <Link href="/" className="flex gap-0.5 items-center">
           <Image
@@ -24,7 +27,7 @@ const Navbar = () => {
           />
           <span className="logo-text">Bookified</span>
         </Link>
-        <nav className="w-fit flex gap-7.5 items-centered">
+        <nav className="w-fit flex gap-7.5 items-center">
           {navItems.map(({ label, href }) => {
             const isActive =
               href === "/" ? pathName === "/" : pathName.startsWith(href);
@@ -43,6 +46,22 @@ const Navbar = () => {
             );
           })}
         </nav>
+        <div className="flex gap-7.5 items-center">
+          {!isLoaded ? null : isSignedIn ? (
+            <>
+              {user?.firstName && (
+                <Link href="/subscriptions" className="nav-user-name">
+                  {user.firstName}
+                </Link>
+              )}
+              <UserButton />
+            </>
+          ) : (
+            <SignInButton>
+              <button>Sign in</button>
+            </SignInButton>
+          )}
+        </div>
       </div>
     </header>
   );

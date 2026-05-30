@@ -6,6 +6,8 @@ import {
   Mona_Sans,
   Raleway,
 } from "next/font/google";
+
+import Navbar from "@/components/Navbar";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 
@@ -57,7 +59,10 @@ export default function RootLayout({
         raleway.variable,
       )}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <Navbar />
+        {children}
+      </body>
     </html>
   );
 }

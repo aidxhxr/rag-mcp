@@ -1,11 +1,22 @@
 import HeroSection from "@/components/HeroSection";
+import { sampleBooks } from "@/lib/constants";
+import BookCard from "@/components/BookCard";
 
 const Page = () => {
   return (
-    <main className="pt-[94px] pb-18 min-h-screen">
-      <div className="max-w-7xl mx-auto px-5 w-full">
+    <main className="wrapper container">
         <HeroSection />
-      </div>
+        <div className="library-books-grid">
+          {sampleBooks.map((book) => (
+            <BookCard
+              key={book._id}
+              title={book.title}
+              author={book.author}
+              coverURL={book.coverURL}
+              slug={book.slug}
+            />
+          ))}
+        </div>
     </main>
   );
 };

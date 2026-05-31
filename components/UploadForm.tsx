@@ -42,6 +42,18 @@ interface UploadFormProps {
 const UploadForm = ({ booksUsed = 5, booksLimit = 10 }: UploadFormProps) => {
   const [pdfName, setPdfName] = React.useState<string | null>(null);
   const [coverName, setCoverName] = React.useState<string | null>(null);
+  const pdfInputRef = React.useRef<HTMLInputElement>(null);
+  const coverInputRef = React.useRef<HTMLInputElement>(null);
+
+  function triggerOnKey(
+    ref: React.RefObject<HTMLInputElement | null>,
+    e: React.KeyboardEvent
+  ) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      ref.current?.click();
+    }
+  }
 
   const {
     control,
@@ -80,23 +92,30 @@ const UploadForm = ({ booksUsed = 5, booksLimit = 10 }: UploadFormProps) => {
           control={control}
           render={({ field: { onChange, ...field } }) => (
             <label
+              tabIndex={0}
+              onKeyDown={(e) => triggerOnKey(pdfInputRef, e)}
               className={cn(
-                "flex flex-col items-center justify-center gap-2 w-full rounded-xl border border-[rgba(33,42,59,0.15)] bg-white cursor-pointer py-10 transition-colors hover:bg-[#fafaf8]",
+                "flex flex-col items-center justify-center gap-2 w-full rounded-xl border border-[rgba(33,42,59,0.15)] bg-white cursor-pointer py-10 transition-colors hover:bg-[#fafaf8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(33,42,59,0.4)] focus-visible:ring-offset-2",
                 errors.pdf && "border-red-400"
               )}
             >
               <input
                 {...field}
+                ref={pdfInputRef}
                 value={undefined}
                 type="file"
                 accept=".pdf,application/pdf"
+                tabIndex={-1}
                 className="sr-only"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file) {
-                    onChange(file);
-                    setPdfName(file.name);
+                  if (!file) return;
+                  if (file.type !== "application/pdf") {
+                    e.target.value = "";
+                    return;
                   }
+                  onChange(file);
+                  setPdfName(file.name);
                 }}
               />
               <Upload className="size-9 text-[#9c8060] stroke-[1.5]" />
@@ -123,12 +142,18 @@ const UploadForm = ({ booksUsed = 5, booksLimit = 10 }: UploadFormProps) => {
           name="coverImage"
           control={control}
           render={({ field: { onChange, ...field } }) => (
-            <label className="flex flex-col items-center justify-center gap-2 w-full rounded-xl border border-[rgba(33,42,59,0.15)] bg-white cursor-pointer py-10 transition-colors hover:bg-[#fafaf8]">
+            <label
+              tabIndex={0}
+              onKeyDown={(e) => triggerOnKey(coverInputRef, e)}
+              className="flex flex-col items-center justify-center gap-2 w-full rounded-xl border border-[rgba(33,42,59,0.15)] bg-white cursor-pointer py-10 transition-colors hover:bg-[#fafaf8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(33,42,59,0.4)] focus-visible:ring-offset-2"
+            >
               <input
                 {...field}
+                ref={coverInputRef}
                 value={undefined}
                 type="file"
                 accept="image/*"
+                tabIndex={-1}
                 className="sr-only"
                 onChange={(e) => {
                   const file = e.target.files?.[0];

@@ -49,12 +49,12 @@ const Navbar = () => {
         <div className="flex gap-7.5 items-center">
           {!isLoaded ? null : isSignedIn ? (
             <>
+              <UserButton />
               {user?.firstName && (
                 <Link href="/subscriptions" className="nav-user-name">
                   {user.firstName}
                 </Link>
               )}
-              <UserButton />
             </>
           ) : (
             <SignInButton>

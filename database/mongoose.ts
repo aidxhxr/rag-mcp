@@ -24,6 +24,13 @@ export const connectToDatabase = async () => {
       bufferCommands: false,
     });
   }
-  cached.conn = await cached.promise;
+  try {
+    cached.conn = await cached.promise;
+  } catch (e) {
+    cached.conn = null;
+    console.log(`MongoDB connection error: ${e}`);
+    throw e;
+  }
+  console.log("Connection to MongoDB");
   return cached.conn;
 };

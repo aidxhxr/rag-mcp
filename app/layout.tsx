@@ -6,6 +6,7 @@ import "./globals.css";
 //internal
 import Image from "next/image";
 import Link from "next/link";
+import NavLinks from "@/components/NavLinks";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -23,10 +24,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} h-full antialiased`}
-    >
+    <html lang="en" className={`${geistSans.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-[#F9F6F0] text-[#1a1a1a]">
         <header className="flex items-center justify-between px-8 py-4">
           <div className="flex items-center gap-2">
@@ -38,26 +36,7 @@ export default function RootLayout({
             />
             <span className="font-bold text-lg tracking-tight">Bookified</span>
           </div>
-          <nav className="flex items-center gap-8">
-            <Link
-              href="/"
-              className="text-sm font-medium border-b-2 border-[#1a1a1a] pb-0.5"
-            >
-              Library
-            </Link>
-            <Link
-              href="/new-book"
-              className="text-sm font-medium text-[#6b6b6b] hover:text-[#1a1a1a] transition-colors"
-            >
-              Add New
-            </Link>
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold">
-                A
-              </div>
-              <span className="text-sm font-medium">Adrian</span>
-            </div>
-          </nav>
+          <NavLinks />
         </header>
         <main className="flex-1">{children}</main>
       </body>

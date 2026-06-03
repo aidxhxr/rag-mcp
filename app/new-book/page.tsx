@@ -13,8 +13,14 @@ export default function NewBookPage() {
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  function handleFormSubmit(formData: FormData) {
+    const pdf = formData.get("bookPdf");
+    const cover = formData.get("bookCover");
+    const title = formData.get("bookTitle");
+    const author = formData.get("bookAuthor");
+    const voice = formData.get("bookAssistant");
+    console.log(pdf, cover, title, author, voice);
+
     // TODO: upload PDF + cover to Supabase Storage, trigger RAG pipeline
   }
 
@@ -31,7 +37,7 @@ export default function NewBookPage() {
         </span>
       </p>
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-8">
+      <form action={handleFormSubmit} className="flex flex-col gap-8">
         {/* PDF upload */}
         <div>
           <label className="block text-sm font-semibold text-[#2a2a2a] mb-2">
@@ -41,6 +47,7 @@ export default function NewBookPage() {
             ref={pdfInputRef}
             type="file"
             accept=".pdf"
+            name="bookPdf"
             className="hidden"
             onChange={(e) => setPdfFile(e.target.files?.[0] ?? null)}
           />
@@ -80,6 +87,7 @@ export default function NewBookPage() {
             ref={coverInputRef}
             type="file"
             accept="image/*"
+            name="bookCover"
             className="hidden"
             onChange={(e) => setCoverFile(e.target.files?.[0] ?? null)}
           />
@@ -118,6 +126,7 @@ export default function NewBookPage() {
           </label>
           <input
             type="text"
+            name="bookTitle"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="ex: Rich Dad Poor Dad"
@@ -132,6 +141,7 @@ export default function NewBookPage() {
           </label>
           <input
             type="text"
+            name="bookAuthor"
             value={author}
             onChange={(e) => setAuthor(e.target.value)}
             placeholder="ex: Robert Kiyosaki"
@@ -169,6 +179,8 @@ export default function NewBookPage() {
             ))}
           </div>
         </div>
+
+        <input type="hidden" name="bookAssistant" value={selectedVoice} />
 
         {/* Submit */}
         <button

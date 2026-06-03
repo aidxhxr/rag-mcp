@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 
 const NavLinks = () => {
   const pathname = usePathname();
-  console.log(pathname);
   return (
     <nav className="flex items-center gap-8">
       {navLinks.map((item) => (

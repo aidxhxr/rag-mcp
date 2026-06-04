@@ -25,7 +25,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col bg-[#F9F6F0] text-[#1a1a1a]">
+      <body className="min-h-full flex flex-col bg-[#F9F6F0] text-[#1a1a1a] overflow-y-scroll">
         <header className="flex items-center justify-between px-8 py-4">
           <div className="flex items-center gap-2">
             <Image

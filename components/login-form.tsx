@@ -12,29 +12,29 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import type { Provider } from '@supabase/supabase-js'
 
 export function LoginForm({ className, ...props }: React.ComponentPropsWithoutRef<'div'>) {
   const [error, setError] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoading, setIsLoading] = useState<Provider | null>(null)
 
-  const handleSocialLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSocialLogin = async (provider: Provider) => {
     const supabase = createClient()
-    setIsLoading(true)
+    setIsLoading(provider)
     setError(null)
 
     try {
       const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'github',
+        provider,
         options: {
-          redirectTo: `${window.location.origin}/auth/oauth?next=/protected`,
+          redirectTo: `${window.location.origin}/auth/oauth?next=/`,
         },
       })
 
       if (error) throw error
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : 'An error occurred')
-      setIsLoading(false)
+      setIsLoading(null)
     }
   }
 
@@ -46,14 +46,24 @@ export function LoginForm({ className, ...props }: React.ComponentPropsWithoutRe
           <CardDescription>Sign in to your account to continue</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSocialLogin}>
-            <div className="flex flex-col gap-6">
-              {error && <p className="text-sm text-destructive-500">{error}</p>}
-              <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? 'Logging in...' : 'Continue with GitHub'}
-              </Button>
-            </div>
-          </form>
+          <div className="flex flex-col gap-3">
+            {error && <p className="text-sm text-destructive-500">{error}</p>}
+            <Button
+              className="w-full"
+              disabled={isLoading !== null}
+              onClick={() => handleSocialLogin('google')}
+            >
+              {isLoading === 'google' ? 'Logging in...' : 'Continue with Google'}
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full"
+              disabled={isLoading !== null}
+              onClick={() => handleSocialLogin('github')}
+            >
+              {isLoading === 'github' ? 'Logging in...' : 'Continue with GitHub'}
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -9,8 +9,8 @@ An app where users upload books (PDF) and have voice-only conversations with the
 - [x] 1. User uploads a PDF book
 - [x] 2. PDF is downloaded server-side and parsed into raw text
 - [x] 3. Text is chunked, embedded (Voyage AI), and stored in pgvector
-- [ ] 4. User opens a book and speaks a question
-- [ ] 5. Speech is transcribed (Deepgram)
+- [x] 4. User opens a book and speaks a question (mic UI built, recording wired up)
+- [~] 5. Speech is transcribed (Deepgram) — browser WebSocket implemented, debugging in progress
 - [ ] 6. Transcription is embedded → vector search → re-ranked → sent to Claude Haiku with context
 - [ ] 7. Claude's answer is converted to speech (Deepgram Aura-2) and played back
 
@@ -81,6 +81,11 @@ An app where users upload books (PDF) and have voice-only conversations with the
 - [x] Home page loads real books from Supabase (filtered by user_id, batch signed cover URLs)
 - [x] `/app/books/[book_id]` chat page — server fetches book + signed cover URL, passes to `ChatUI`
 - [x] `ChatUI` client component — book header, chat bubble area, mic button pinned at bottom center
+- [x] `ChatUI` mic recording — `getUserMedia` + `MediaRecorder` (250ms chunks, `audio/webm;codecs=opus`)
+- [x] `ChatUI` Deepgram live transcription — browser-side WebSocket via `@deepgram/sdk` `client.listen.v1.connect()`
+- [x] `ChatUI` interim transcript display — faded italic bubble updates in real time while speaking
+- [x] `ChatUI` final transcript → user message bubble on mic stop
+- [x] `/api/transcribe` — server-side pre-recorded transcription via `client.listen.v1.media.transcribeFile()`, returns `{ transcript }`
 
 ## Implementation Notes
 
@@ -94,12 +99,20 @@ An app where users upload books (PDF) and have voice-only conversations with the
 - Never create the Supabase browser client at module scope — always create it inside the function/hook to avoid stale auth state and repeated requests
 - Always use `router.push()` from `next/navigation` for client-side navigation — never `window.location.href`, which bypasses Next.js router state and can cause repeated GET requests in dev mode
 - The chat page layout uses `h-[calc(100dvh-60px)] flex flex-col overflow-hidden` — the chat area needs `flex-1 min-h-0 overflow-y-auto` (`min-h-0` is required or flex won't shrink the area)
+- Deepgram SDK (`@deepgram/sdk` v4): use `DeepgramClient` (exported as `CustomDeepgramClient`), connect with `client.listen.v1.connect(args)` — returns a `V1Socket` with `.on(event, handler)` and `.sendMedia(blob)`
+- **Deepgram browser WebSocket auth**: browsers cannot send custom HTTP headers in WebSocket handshakes — the `Authorization` header in `ConnectArgs` is silently dropped. Must pass `queryParams: { token: apiKey }` so the key is appended as `?token=...` in the URL
+- Deepgram `ConnectArgs` boolean-like fields (`interim_results`, `smart_format`, `punctuate`, `vad_events`) are typed as `string`, not `boolean` — pass `"true"` not `true`
+- `NEXT_PUBLIC_DEEPGRAM_API_KEY` must be set in `.env.local` (even if `DEEPGRAM_API_KEY` is also set) — the browser cannot read non-`NEXT_PUBLIC_` env vars
+- `V1Socket.readyState` returns `3` (CLOSED) immediately after `client.listen.v1.connect()` resolves — this is expected, the underlying WebSocket connects asynchronously. Wait for the `open` event before treating the socket as ready; guard `sendMedia` calls with `readyState === 1`
+- `/api/transcribe` is a server-side fallback using the pre-recorded REST API — it is **not** used by `ChatUI`, which does live browser-side streaming instead
+
+## In Progress
+- [ ] Deepgram browser WebSocket connection: `readyState` stays `3`, `open` event never fires — a raw `new WebSocket(wss://api.deepgram.com/v1/listen?model=nova-3&token=KEY)` test has been added to `ChatUI` to determine if the issue is SDK-level or network/auth-level. Remove the raw test once resolved.
 
 ## Not Started
-- [ ] Microphone recording UI ("Press to Talk") in `ChatUI`
-- [ ] `/api/transcribe` — Deepgram Nova STT
 - [ ] `/api/chat` — embed query → pgvector search → Voyage rerank → Claude Haiku
 - [ ] `/api/speak` — Deepgram Aura-2 TTS, stream audio back
+- [ ] Remove debug console logs and raw WebSocket test from `ChatUI` once transcription is confirmed working
 - [ ] Audio playback in the browser
 - [ ] Stripe payments + pricing page + webhook handler
 - [ ] Conversation history (store messages per book per user)

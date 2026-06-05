@@ -6,7 +6,6 @@ import { navLinks } from "@/lib/constants";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,6 +26,7 @@ import { useRouter } from "next/navigation";
 const NavLinks = () => {
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined);
   const [initials, setInitials] = useState("?");
+  const safeAvatarUrl = avatarUrl?.startsWith("http") ? avatarUrl : undefined;
 
   useEffect(() => {
     const supabase = createClient();
@@ -71,7 +71,9 @@ const NavLinks = () => {
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Avatar className="cursor-pointer">
-            <AvatarImage src={avatarUrl} alt="@shadcn" className="grayscale" />
+            {safeAvatarUrl && (
+              <AvatarImage src={safeAvatarUrl} alt="@shadcn" className="grayscale" />
+            )}
             <AvatarFallback>{initials}</AvatarFallback>
           </Avatar>
         </DropdownMenuTrigger>

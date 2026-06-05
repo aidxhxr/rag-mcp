@@ -80,6 +80,7 @@ export default async function Home() {
             <Link
               key={book.id}
               href={`/books/${book.id}`}
+              prefetch={false}
               className="flex flex-col gap-2 group"
             >
               <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-[#E8E0CE] shadow-sm group-hover:shadow-md transition-shadow">

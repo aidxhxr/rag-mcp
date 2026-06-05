@@ -6,12 +6,13 @@ An app where users upload books (PDF) and have voice-only conversations with the
 
 ## Core Flow
 
-1. User uploads a PDF book
-2. The book is parsed, chunked, embedded, and stored in pgvector
-3. User opens a book and speaks a question
-4. Speech is transcribed (Deepgram)
-5. Transcription is embedded → vector search → re-ranked → sent to Claude Haiku with context
-6. Claude's answer is converted to speech (Deepgram Aura-2) and played back
+- [x] 1. User uploads a PDF book
+- [x] 2. PDF is downloaded server-side and parsed into raw text
+- [ ] 3. Text is chunked, embedded (Voyage AI), and stored in pgvector
+- [ ] 4. User opens a book and speaks a question
+- [ ] 5. Speech is transcribed (Deepgram)
+- [ ] 6. Transcription is embedded → vector search → re-ranked → sent to Claude Haiku with context
+- [ ] 7. Claude's answer is converted to speech (Deepgram Aura-2) and played back
 
 ## Stack
 
@@ -30,3 +31,31 @@ An app where users upload books (PDF) and have voice-only conversations with the
 | Text-to-Speech | Deepgram (Aura-2) |
 | Payments + Subscriptions | Stripe (`stripe` + `@stripe/stripe-js`) |
 | Deployment | Vercel |
+
+## Status
+
+### Done
+- [x] Google/GitHub OAuth (Supabase)
+- [x] Middleware auth protection
+- [x] Home page (book library UI)
+- [x] New book upload form (PDF + cover + title + author + voice)
+- [x] Supabase Storage buckets (`book_pdf`, `book_image`) with RLS policies
+- [x] Upload PDF + cover to Supabase Storage from client
+- [x] `/api/upload` route — downloads PDF from storage, parses text with pdf-parse
+
+### In Progress
+- [ ] Chunking parsed text (sliding window, ~500 tokens, 50-token overlap)
+- [ ] Voyage AI embeddings (`voyage-3-lite`) per chunk
+- [ ] Store chunks + vectors in pgvector (`book_chunks` table)
+
+### Not Started
+- [ ] `/app/book/[id]` chat page
+- [ ] Microphone recording UI ("Press to Talk")
+- [ ] `/api/transcribe` — Deepgram Nova STT
+- [ ] `/api/chat` — embed query → pgvector search → Voyage rerank → Claude Haiku
+- [ ] `/api/speak` — Deepgram Aura-2 TTS, stream audio back
+- [ ] Audio playback in the browser
+- [ ] Insert book metadata into `books` DB table after upload
+- [ ] Redirect to book page after successful upload
+- [ ] Stripe payments + pricing page + webhook handler
+- [ ] Conversation history (store messages per book per user)

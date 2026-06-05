@@ -2,8 +2,14 @@
 
 import { useRef, useState } from "react";
 import { maleVoices, femaleVoices, Voice } from "@/lib/constants";
+import { createClient } from "@/lib/supabase/client";
 
-export default function NewBookPage() {
+const supabase = createClient();
+
+export default async function NewBookPage() {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
@@ -13,15 +19,27 @@ export default function NewBookPage() {
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
-  function handleFormSubmit(formData: FormData) {
-    const pdf = formData.get("bookPdf");
-    const cover = formData.get("bookCover");
-    const title = formData.get("bookTitle");
-    const author = formData.get("bookAuthor");
-    const voice = formData.get("bookAssistant");
-    console.log(pdf, cover, title, author, voice);
+  async function handleFormSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const pdf = formData.get("bookPdf") as File | null;
+    const cover = formData.get("bookCover") as File | null;
+    const title = formData.get("bookTitle") as string;
+    const author = formData.get("bookAuthor") as string;
+    const voice = formData.get("bookAssistant") as string;
+    if (!pdf || !cover) return;
 
-    // TODO: upload PDF + cover to Supabase Storage, trigger RAG pipeline
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+
+    await supabase.storage
+      .from("book_pdf")
+      .upload(`${user.id}/${Date.now()}.pdf`, pdf);
+    await supabase.storage
+      .from("book_cover")
+      .upload(`${user.id}/${Date.now()}.pdf`, cover);
   }
 
   return (
@@ -37,7 +55,7 @@ export default function NewBookPage() {
         </span>
       </p>
 
-      <form action={handleFormSubmit} className="flex flex-col gap-8">
+      <form onSubmit={handleFormSubmit} className="flex flex-col gap-8">
         {/* PDF upload */}
         <div>
           <label className="block text-sm font-semibold text-[#2a2a2a] mb-2">

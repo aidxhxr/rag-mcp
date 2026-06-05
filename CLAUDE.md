@@ -11,7 +11,7 @@ An app where users upload books (PDF) and have voice-only conversations with the
 3. User opens a book and speaks a question
 4. Speech is transcribed (Deepgram)
 5. Transcription is embedded → vector search → re-ranked → sent to Claude Haiku with context
-6. Claude's answer is converted to speech (ElevenLabs) and played back
+6. Claude's answer is converted to speech (Deepgram Aura-2) and played back
 
 ## Stack
 
@@ -28,4 +28,5 @@ An app where users upload books (PDF) and have voice-only conversations with the
 | Streaming | Vercel AI SDK (`useChat` hook) |
 | Speech-to-Text | Deepgram |
 | Text-to-Speech | Deepgram (Aura-2) |
+| Payments + Subscriptions | Stripe (`stripe` + `@stripe/stripe-js`) |
 | Deployment | Vercel |

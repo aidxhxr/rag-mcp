@@ -60,11 +60,12 @@ export default function NewBookPage() {
       }),
     });
 
-    const { bookId, error } = await res.json();
-    if (error) {
-      console.error("Upload failed:", error);
+    if (!res.ok) {
+      const body = await res.text();
+      console.error("Upload failed:", body);
       return;
     }
+    const { bookId } = await res.json();
 
     window.location.href = `/book/${bookId}`;
   }

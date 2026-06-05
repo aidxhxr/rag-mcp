@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
 
   const { data: book, error: bookError } = await supabase
     .from("books")
-    .insert({ user_id: user.id, title, author, voice_id: voiceId, pdf_path: pdfPath, cover_path: coverPath })
+    .insert({ user_id: user.id, title, author, voice_id: voiceId, file_path: pdfPath, cover_path: coverPath })
     .select("id")
     .single();
   if (bookError) return NextResponse.json({ error: bookError.message }, { status: 500 });
@@ -53,20 +53,29 @@ export async function POST(request: NextRequest) {
   const { text } = await parser.getText();
 
   const stringChunks = await splitter.splitText(text);
-  const embeddingResponse = await client.embed({
-    input: stringChunks,
-    model: "voyage-4",
-  });
+
+  const BATCH_SIZE = 1000;
+  const embeddings: number[][] = [];
+  for (let i = 0; i < stringChunks.length; i += BATCH_SIZE) {
+    const batch = stringChunks.slice(i, i + BATCH_SIZE);
+    const res = await client.embed({ input: batch, model: "voyage-4" });
+    embeddings.push(...res.data!.map((d) => d.embedding!));
+  }
 
   const rows = stringChunks.map((chunk, i) => ({
     book_id: book.id,
     content: chunk,
-    embedding: embeddingResponse.data![i].embedding,
+    embedding: embeddings[i],
   }));
-  const { error: chunksError } = await supabase.from("book_chunks").insert(rows);
-  if (chunksError) {
-    await supabase.from("books").delete().eq("id", book.id);
-    return NextResponse.json({ error: chunksError.message }, { status: 500 });
+
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const { error: chunksError } = await supabase
+      .from("book_chunks")
+      .insert(rows.slice(i, i + BATCH_SIZE));
+    if (chunksError) {
+      await supabase.from("books").delete().eq("id", book.id);
+      return NextResponse.json({ error: chunksError.message }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ ok: true, bookId: book.id });

@@ -53,13 +53,20 @@ export default function NewBookPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         pdfPath: `${user.id}/${timestamp}.pdf`,
+        coverPath: `${user.id}/${timestamp}`,
         title,
         author,
         voiceId: voice,
       }),
     });
 
-    console.log(`RESPONSE: ${res}`);
+    const { bookId, error } = await res.json();
+    if (error) {
+      console.error("Upload failed:", error);
+      return;
+    }
+
+    window.location.href = `/book/${bookId}`;
   }
   return (
     <div className="max-w-2xl mx-auto px-6 py-10">

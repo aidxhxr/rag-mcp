@@ -3,15 +3,16 @@
 import { useRef, useState } from "react";
 import { maleVoices, femaleVoices, Voice } from "@/lib/constants";
 import { createClient } from "@/lib/supabase/client";
-
-const supabase = createClient();
+import { useRouter } from "next/navigation";
 
 export default function NewBookPage() {
+  const router = useRouter();
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [selectedVoice, setSelectedVoice] = useState("rachel");
+  const [loading, setLoading] = useState(false);
 
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
@@ -26,48 +27,54 @@ export default function NewBookPage() {
     const voice = formData.get("bookAssistant") as string;
     if (!pdf || !cover) return;
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
+    setLoading(true);
+    const supabase = createClient();
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
 
-    const timestamp = Date.now();
-    const { error: pdfError } = await supabase.storage
-      .from("book_pdf")
-      .upload(`${user.id}/${timestamp}.pdf`, pdf);
-    if (pdfError) {
-      console.error("PDF upload failed:", pdfError);
-      return;
+      const timestamp = Date.now();
+      const { error: pdfError } = await supabase.storage
+        .from("book_pdf")
+        .upload(`${user.id}/${timestamp}.pdf`, pdf);
+      if (pdfError) {
+        console.error("PDF upload failed:", pdfError);
+        return;
+      }
+
+      const { error: coverError } = await supabase.storage
+        .from("book_image")
+        .upload(`${user.id}/${timestamp}`, cover);
+      if (coverError) {
+        console.error("Cover upload failed:", coverError);
+        return;
+      }
+
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pdfPath: `${user.id}/${timestamp}.pdf`,
+          coverPath: `${user.id}/${timestamp}`,
+          title,
+          author,
+          voiceId: voice,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.text();
+        console.error("Upload failed:", body);
+        return;
+      }
+      const { bookId } = await res.json();
+
+      router.push(`/books/${bookId}`);
+    } finally {
+      setLoading(false);
     }
-
-    const { error: coverError } = await supabase.storage
-      .from("book_image")
-      .upload(`${user.id}/${timestamp}`, cover);
-    if (coverError) {
-      console.error("Cover upload failed:", coverError);
-      return;
-    }
-
-    const res = await fetch("/api/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        pdfPath: `${user.id}/${timestamp}.pdf`,
-        coverPath: `${user.id}/${timestamp}`,
-        title,
-        author,
-        voiceId: voice,
-      }),
-    });
-
-    if (!res.ok) {
-      const body = await res.text();
-      console.error("Upload failed:", body);
-      return;
-    }
-    const { bookId } = await res.json();
-
-    window.location.href = `/book/${bookId}`;
   }
   return (
     <div className="max-w-2xl mx-auto px-6 py-10">
@@ -230,9 +237,10 @@ export default function NewBookPage() {
         {/* Submit */}
         <button
           type="submit"
-          className="w-full bg-[#5C2D1A] hover:bg-[#4a2415] text-white font-semibold text-sm py-4 rounded-2xl transition-colors cursor-pointer"
+          disabled={loading}
+          className="w-full bg-[#5C2D1A] hover:bg-[#4a2415] disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold text-sm py-4 rounded-2xl transition-colors cursor-pointer"
         >
-          Begin Synthesis
+          {loading ? "Processing… this may take a minute" : "Begin Synthesis"}
         </button>
       </form>
     </div>

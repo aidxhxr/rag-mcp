@@ -8,13 +8,13 @@ export async function POST(req: NextRequest) {
   }
 
   const client = new DeepgramClient({
-    apiKey: process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY!,
+    apiKey: process.env.DEEPGRAM_API_KEY!,
   });
 
   let response;
   try {
     response = await client.listen.v1.media.transcribeFile(blob, {
-      model: "nova-3",
+      model: "nova-2",
       smart_format: true,
       punctuate: true,
     });

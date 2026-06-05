@@ -78,19 +78,25 @@ An app where users upload books (PDF) and have voice-only conversations with the
 - [x] Store chunks + vectors in pgvector (`book_chunks` table)
 - [x] Insert book metadata into `books` DB table after upload
 - [x] Redirect to book page after successful upload
+- [x] Home page loads real books from Supabase (filtered by user_id, batch signed cover URLs)
+- [x] `/app/books/[book_id]` chat page — server fetches book + signed cover URL, passes to `ChatUI`
+- [x] `ChatUI` client component — book header, chat bubble area, mic button pinned at bottom center
 
 ## Implementation Notes
 
 - Voyage API batch limit is 1000 chunks per request — embed and insert in batches of 1000
 - Supabase PostgREST times out on large bulk inserts — also insert `book_chunks` in batches of 1000
 - `books.file_path` stores the storage path (e.g. `{user_id}/{timestamp}.pdf`), not a public URL
-- `books.cover_path` stores the storage path (e.g. `{user_id}/{timestamp}`)
+- `books.cover_path` stores the storage path (e.g. `{user_id}/{timestamp}`) — no file extension
 - Auth is always resolved server-side in route handlers via `supabase.auth.getUser()` — never trust client-sent user IDs
 - On any failure after `books` insert, delete the book row to avoid orphaned records
+- Cover images are served via signed URLs (`createSignedUrl` / `createSignedUrls`), not public URLs — Supabase domain is not in `next.config.ts` remotePatterns, so use `<img>` not `<Image>`
+- Never create the Supabase browser client at module scope — always create it inside the function/hook to avoid stale auth state and repeated requests
+- Always use `router.push()` from `next/navigation` for client-side navigation — never `window.location.href`, which bypasses Next.js router state and can cause repeated GET requests in dev mode
+- The chat page layout uses `h-[calc(100dvh-60px)] flex flex-col overflow-hidden` — the chat area needs `flex-1 min-h-0 overflow-y-auto` (`min-h-0` is required or flex won't shrink the area)
 
 ## Not Started
-- [ ] `/app/book/[id]` chat page
-- [ ] Microphone recording UI ("Press to Talk")
+- [ ] Microphone recording UI ("Press to Talk") in `ChatUI`
 - [ ] `/api/transcribe` — Deepgram Nova STT
 - [ ] `/api/chat` — embed query → pgvector search → Voyage rerank → Claude Haiku
 - [ ] `/api/speak` — Deepgram Aura-2 TTS, stream audio back

@@ -20,15 +20,16 @@ type Message = {
 export default function ChatUI({ book }: { book: Book }) {
   const [messages] = useState<Message[]>([]);
   const [isRecording, setIsRecording] = useState(false);
+  const coverUrl = book.coverUrl?.startsWith("http") ? book.coverUrl : null;
 
   return (
     <div className="h-[calc(100dvh-60px)] flex flex-col px-8 py-6 gap-4 overflow-hidden">
       {/* Book header */}
       <div className="bg-[#EDE5D0] rounded-2xl p-6 flex items-center gap-6 shrink-0">
         <div className="shrink-0">
-          {book.coverUrl ? (
+          {coverUrl ? (
             <img
-              src={book.coverUrl}
+              src={coverUrl}
               alt={book.title}
               className="w-24 h-32 object-cover rounded-xl shadow-md"
             />

@@ -5,11 +5,12 @@ import ChatUI from "./ChatUI";
 
 type Props = { params: Promise<{ book_id: string }> };
 
-export default async function BookPage({ params }: Props) {
-  const { book_id } = await params;
+export default function BookPage({ params }: Props) {
   return (
     <Suspense fallback={<div className="flex items-center justify-center h-screen text-[#8a8a8a]">Loading…</div>}>
-      <Content book_id={book_id} />
+      {params.then(({ book_id }) => (
+        <Content book_id={book_id} />
+      ))}
     </Suspense>
   );
 }
@@ -32,6 +33,7 @@ async function Content({ book_id }: { book_id: string }) {
   const { data: signed } = await supabase.storage
     .from("book_image")
     .createSignedUrl(book.cover_path, 3600);
+  const coverUrl = signed?.signedUrl?.startsWith("http") ? signed.signedUrl : null;
 
   return (
     <ChatUI
@@ -40,7 +42,7 @@ async function Content({ book_id }: { book_id: string }) {
         title: book.title,
         author: book.author,
         voiceId: book.voice_id,
-        coverUrl: signed?.signedUrl ?? null,
+        coverUrl,
       }}
     />
   );

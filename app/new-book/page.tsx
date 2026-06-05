@@ -6,10 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 
 const supabase = createClient();
 
-export default async function NewBookPage() {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export default function NewBookPage() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
@@ -34,14 +31,36 @@ export default async function NewBookPage() {
     } = await supabase.auth.getUser();
     if (!user) return;
 
-    await supabase.storage
+    const timestamp = Date.now();
+    const { error: pdfError } = await supabase.storage
       .from("book_pdf")
-      .upload(`${user.id}/${Date.now()}.pdf`, pdf);
-    await supabase.storage
-      .from("book_cover")
-      .upload(`${user.id}/${Date.now()}.pdf`, cover);
-  }
+      .upload(`${user.id}/${timestamp}.pdf`, pdf);
+    if (pdfError) {
+      console.error("PDF upload failed:", pdfError);
+      return;
+    }
 
+    const { error: coverError } = await supabase.storage
+      .from("book_image")
+      .upload(`${user.id}/${timestamp}`, cover);
+    if (coverError) {
+      console.error("Cover upload failed:", coverError);
+      return;
+    }
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pdfPath: `${user.id}/${timestamp}.pdf`,
+        title,
+        author,
+        voiceId: voice,
+      }),
+    });
+
+    console.log(`RESPONSE: ${res}`);
+  }
   return (
     <div className="max-w-2xl mx-auto px-6 py-10">
       {/* Page heading */}

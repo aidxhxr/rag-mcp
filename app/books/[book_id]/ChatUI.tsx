@@ -17,6 +17,11 @@ type Message = {
   text: string;
 };
 
+const SPEECH_THRESHOLD = 18;   // RMS × 100 that counts as speech (raise if too sensitive)
+const SPEECH_MIN_MS = 600;     // must speak for at least this long before committing
+const SILENCE_MS = 2000;       // ms of quiet after speech before committing
+const VAD_START_DELAY = 400;   // ms to wait after recorder starts before VAD polls (mic settle)
+
 export default function ChatUI({ book }: { book: Book }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -24,16 +29,15 @@ export default function ChatUI({ book }: { book: Book }) {
   const [interimText, setInterimText] = useState("");
   const coverUrl = book.coverUrl?.startsWith("http") ? book.coverUrl : null;
 
-  const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const vadRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isRecordingRef = useRef(false);
-  const finalRef = useRef("");
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inFlightRef = useRef(0);
 
   useEffect(() => {
     return () => {
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      isRecordingRef.current = false;
+      if (vadRef.current) clearInterval(vadRef.current);
       recorderRef.current?.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
@@ -41,13 +45,11 @@ export default function ChatUI({ book }: { book: Book }) {
 
   const sendQuery = async (query: string) => {
     if (!query.trim()) return;
-
     setMessages((prev) => [
       ...prev,
       { id: crypto.randomUUID(), role: "user", text: query.trim() },
     ]);
     setIsThinking(true);
-
     try {
       const chatRes = await fetch("/api/chat", {
         method: "POST",
@@ -56,13 +58,11 @@ export default function ChatUI({ book }: { book: Book }) {
       });
       if (!chatRes.ok) throw new Error(await chatRes.text());
       const { answer } = (await chatRes.json()) as { answer: string };
-
       setMessages((prev) => [
         ...prev,
         { id: crypto.randomUUID(), role: "book", text: answer },
       ]);
       setIsThinking(false);
-
       void (async () => {
         const speakRes = await fetch("/api/speak", {
           method: "POST",
@@ -71,10 +71,10 @@ export default function ChatUI({ book }: { book: Book }) {
         });
         if (!speakRes.ok) return;
         const audioBlob = await speakRes.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
+        const url = URL.createObjectURL(audioBlob);
+        const audio = new Audio(url);
         audio.play().catch(console.error);
-        audio.onended = () => URL.revokeObjectURL(audioUrl);
+        audio.onended = () => URL.revokeObjectURL(url);
       })();
     } catch (err) {
       console.error("[chat]", err);
@@ -82,43 +82,110 @@ export default function ChatUI({ book }: { book: Book }) {
     }
   };
 
-  const transcribeChunk = async (blob: Blob) => {
-    if (blob.size < 500) return;
-    inFlightRef.current++;
-    try {
-      const res = await fetch("/api/transcribe", { method: "POST", body: blob });
-      if (!res.ok) return;
+  // Records one utterance (until silence) then transcribes + sends, then restarts.
+  const startSession = (stream: MediaStream) => {
+    if (!isRecordingRef.current) return;
 
-      const { transcript } = (await res.json()) as { transcript: string };
-      const trimmed = transcript.trim();
+    setInterimText("Listening…");
 
-      if (trimmed) {
-        // Speech detected — accumulate and cancel any pending silence commit
-        finalRef.current = finalRef.current
-          ? `${finalRef.current} ${trimmed}`
-          : trimmed;
-        setInterimText(finalRef.current);
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-          silenceTimerRef.current = null;
-        }
-      } else if (finalRef.current.trim() && isRecordingRef.current) {
-        // Silent chunk AND we have accumulated text — start commit timer (if not already running)
-        if (!silenceTimerRef.current) {
-          silenceTimerRef.current = setTimeout(() => {
-            silenceTimerRef.current = null;
-            const query = finalRef.current.trim();
-            finalRef.current = "";
-            setInterimText("");
-            if (query) void sendQuery(query);
-          }, 1000);
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+
+    const chunks: BlobPart[] = [];
+    const recorder = new MediaRecorder(stream, { mimeType });
+    recorderRef.current = recorder;
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      // If the user clicked stop, just clear any lingering status and exit
+      if (!isRecordingRef.current) {
+        setInterimText("");
+        return;
+      }
+
+      const blob = new Blob(chunks, { type: mimeType });
+      if (blob.size > 1500) {
+        setInterimText("Transcribing…");
+        try {
+          const res = await fetch("/api/transcribe", { method: "POST", body: blob });
+          if (res.ok) {
+            const { transcript } = (await res.json()) as { transcript: string };
+            const text = transcript?.trim() ?? "";
+            if (text) {
+              setInterimText("");
+              void sendQuery(text);
+            }
+          }
+        } catch (err) {
+          console.error("[transcribe]", err);
         }
       }
-    } catch (err) {
-      console.error("[transcribe]", err);
-    } finally {
-      inFlightRef.current--;
-    }
+      // Restart for next utterance
+      startSession(stream);
+    };
+
+    recorder.start();
+
+    // --- AudioContext VAD ---
+    const audioCtx = new AudioContext();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    let hasSpeech = false;
+    let speechStart: number | null = null;
+    let silenceStart: number | null = null;
+
+    if (vadRef.current) clearInterval(vadRef.current);
+
+    // Delay VAD polling so mic transient noise at startup doesn't trigger speech
+    const startVad = () => {
+      vadRef.current = setInterval(() => {
+        if (!isRecordingRef.current) {
+          clearInterval(vadRef.current!);
+          vadRef.current = null;
+          audioCtx.close().catch(() => {});
+          return;
+        }
+
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const x = (data[i] - 128) / 128;
+          sum += x * x;
+        }
+        const rms = Math.sqrt(sum / data.length) * 100;
+
+        if (rms > SPEECH_THRESHOLD) {
+          if (!speechStart) speechStart = Date.now();
+          // Only count as real speech after sustained signal
+          if (!hasSpeech && Date.now() - speechStart >= SPEECH_MIN_MS) {
+            hasSpeech = true;
+          }
+          silenceStart = null;
+          if (hasSpeech) setInterimText("Speaking…");
+        } else {
+          speechStart = null;
+          if (hasSpeech) {
+            if (silenceStart === null) silenceStart = Date.now();
+            else if (Date.now() - silenceStart >= SILENCE_MS) {
+              clearInterval(vadRef.current!);
+              vadRef.current = null;
+              audioCtx.close().catch(() => {});
+              if (recorder.state !== "inactive") recorder.stop();
+            }
+          }
+        }
+      }, 100);
+    };
+
+    setTimeout(startVad, VAD_START_DELAY);
   };
 
   const startRecording = async () => {
@@ -130,57 +197,20 @@ export default function ChatUI({ book }: { book: Book }) {
       console.error("[mic] getUserMedia failed:", err);
       return;
     }
-
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus"
-      : "audio/webm";
-
-    const recorder = new MediaRecorder(stream, { mimeType });
-    recorderRef.current = recorder;
     isRecordingRef.current = true;
     setIsRecording(true);
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        void transcribeChunk(new Blob([e.data], { type: mimeType }));
-      }
-    };
-
-    recorder.start(3000); // send a chunk every 3 seconds
-    console.log("[mic] recording started, mimeType:", mimeType);
+    startSession(stream);
   };
 
   const stopRecording = () => {
     isRecordingRef.current = false;
-
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") {
-      recorder.onstop = () => {
-        // Wait for any in-flight transcription requests to finish
-        const waitAndCommit = () => {
-          if (inFlightRef.current > 0) {
-            setTimeout(waitAndCommit, 200);
-            return;
-          }
-          const transcript = finalRef.current.trim();
-          finalRef.current = "";
-          setInterimText("");
-          if (transcript) void sendQuery(transcript);
-        };
-        setTimeout(waitAndCommit, 200);
-      };
-      recorder.stop();
-    }
-
+    if (vadRef.current) { clearInterval(vadRef.current); vadRef.current = null; }
+    if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
     recorderRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     setIsRecording(false);
+    setInterimText("");
   };
 
   const toggleRecording = () => {
@@ -194,18 +224,11 @@ export default function ChatUI({ book }: { book: Book }) {
       <div className="bg-[#EDE5D0] rounded-2xl p-6 flex items-center gap-6 shrink-0">
         <div className="shrink-0">
           {coverUrl ? (
-            <img
-              src={coverUrl}
-              alt={book.title}
-              className="w-24 h-32 object-cover rounded-xl shadow-md"
-            />
+            <img src={coverUrl} alt={book.title} className="w-24 h-32 object-cover rounded-xl shadow-md" />
           ) : (
-            <div className="w-24 h-32 rounded-xl bg-[#D5CAAB] flex items-center justify-center text-3xl shadow-md">
-              📖
-            </div>
+            <div className="w-24 h-32 rounded-xl bg-[#D5CAAB] flex items-center justify-center text-3xl shadow-md">📖</div>
           )}
         </div>
-
         <div className="flex flex-col gap-3">
           <div>
             <h1 className="text-2xl font-bold">{book.title}</h1>
@@ -225,10 +248,8 @@ export default function ChatUI({ book }: { book: Book }) {
 
       {/* Chat messages */}
       <div className="flex-1 min-h-0 bg-white rounded-2xl p-6 flex flex-col gap-3 overflow-y-auto">
-        {messages.length === 0 && !interimText && !isThinking && !isRecording ? (
-          <p className="text-center text-[#aaa] text-sm m-auto">
-            Press the mic and start talking
-          </p>
+        {messages.length === 0 && !interimText && !isThinking ? (
+          <p className="text-center text-[#aaa] text-sm m-auto">Press the mic and start talking</p>
         ) : (
           <>
             {messages.map((msg) => (
@@ -244,9 +265,9 @@ export default function ChatUI({ book }: { book: Book }) {
               </div>
             ))}
 
-            {/* Live interim bubble — shows transcription as it comes in */}
+            {/* Status bubble — Listening… / Speaking… / Transcribing… */}
             {(isRecording || interimText) && (
-              <div className="self-end max-w-[75%] rounded-2xl px-5 py-3 text-base leading-relaxed bg-[#F5DEB3] text-[#1a1a1a]/60 italic">
+              <div className="self-end max-w-[75%] rounded-2xl px-5 py-3 text-base leading-relaxed bg-[#F5DEB3] text-[#1a1a1a]/50 italic">
                 {interimText || "Listening…"}
               </div>
             )}

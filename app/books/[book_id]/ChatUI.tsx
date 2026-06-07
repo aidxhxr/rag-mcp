@@ -50,6 +50,11 @@ export default function ChatUI({ book }: { book: Book }) {
       { id: crypto.randomUUID(), role: "user", text: query.trim() },
     ]);
     setIsThinking(true);
+
+    // TTS fetches fire concurrently as sentences arrive; played back in order after stream ends.
+    const speakFetches: Promise<Blob | null>[] = [];
+    let fullAnswer = "";
+
     try {
       const chatRes = await fetch("/api/chat", {
         method: "POST",
@@ -57,40 +62,74 @@ export default function ChatUI({ book }: { book: Book }) {
         body: JSON.stringify({ book_id: book.id, query: query.trim() }),
       });
       if (!chatRes.ok) throw new Error(await chatRes.text());
-      const { answer } = (await chatRes.json()) as { answer: string };
-      setIsThinking(false);
-      if (answer) {
+
+      const reader = chatRes.body!.getReader();
+      const decoder = new TextDecoder();
+      let rawBuf = "";
+      let firstSentence = true;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        rawBuf += decoder.decode(value, { stream: true });
+        const lines = rawBuf.split("\n");
+        rawBuf = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6)) as {
+              sentence?: string;
+              done?: boolean;
+              answer?: string;
+            };
+            if (event.sentence) {
+              if (firstSentence) {
+                setIsThinking(false);
+                setInterimText("Speaking…");
+                firstSentence = false;
+              }
+              const sentence = event.sentence;
+              speakFetches.push(
+                fetch("/api/speak", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ text: sentence, voice_id: book.voiceId }),
+                })
+                  .then((r) => (r.ok ? r.blob() : null))
+                  .catch(() => null)
+              );
+            }
+            if (event.done) fullAnswer = event.answer ?? "";
+          } catch { /* ignore malformed events */ }
+        }
+      }
+
+      // Play audio in order (TTS fetches were running concurrently during stream)
+      for (const blobPromise of speakFetches) {
+        const blob = await blobPromise;
+        if (!blob) continue;
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        await new Promise<void>((resolve) => {
+          audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+          audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+          audio.play().catch(() => resolve());
+        });
+      }
+
+      if (fullAnswer) {
         setMessages((prev) => [
           ...prev,
-          { id: crypto.randomUUID(), role: "book", text: answer },
+          { id: crypto.randomUUID(), role: "book", text: fullAnswer },
         ]);
-        setInterimText("Speaking…");
-        try {
-          const speakRes = await fetch("/api/speak", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: answer, voice_id: book.voiceId }),
-          });
-          if (speakRes.ok) {
-            const audioBlob = await speakRes.blob();
-            const url = URL.createObjectURL(audioBlob);
-            const audio = new Audio(url);
-            await new Promise<void>((resolve) => {
-              audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-              audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-              audio.play().catch(() => resolve());
-            });
-          } else {
-            console.error("[speak] error:", await speakRes.text());
-          }
-        } catch (err) {
-          console.error("[speak]", err);
-        }
-        setInterimText("");
       }
     } catch (err) {
       console.error("[chat]", err);
+    } finally {
       setIsThinking(false);
+      setInterimText("");
     }
   };
 
@@ -120,7 +159,6 @@ export default function ChatUI({ book }: { book: Book }) {
       }
 
       const blob = new Blob(chunks, { type: mimeType });
-      console.log("[transcribe] blob size:", blob.size, "bytes, type:", mimeType);
       if (blob.size > 1500) {
         setInterimText("Transcribing…");
         try {
@@ -159,7 +197,6 @@ export default function ChatUI({ book }: { book: Book }) {
 
     // Delay VAD polling so mic transient noise at startup doesn't trigger speech
     const startVad = async () => {
-      console.log("[vad] audioCtx state:", audioCtx.state);
       await audioCtx.resume();
       vadRef.current = setInterval(() => {
         if (!isRecordingRef.current) {
@@ -176,7 +213,6 @@ export default function ChatUI({ book }: { book: Book }) {
           sum += x * x;
         }
         const rms = Math.sqrt(sum / data.length) * 100;
-        console.log("[vad] rms:", rms.toFixed(1));
 
         if (rms > SPEECH_THRESHOLD) {
           if (!speechStart) speechStart = Date.now();

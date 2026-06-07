@@ -130,7 +130,7 @@ export default function ChatUI({ book }: { book: Book }) {
             const text = transcript?.trim() ?? "";
             if (text) {
               setInterimText("");
-              void sendQuery(text);
+              await sendQuery(text);
             }
           }
         } catch (err) {
@@ -283,7 +283,7 @@ export default function ChatUI({ book }: { book: Book }) {
             ))}
 
             {/* Status bubble — Listening… / Speaking… / Transcribing… */}
-            {(isRecording || interimText) && (
+            {(interimText || (isRecording && !isThinking)) && (
               <div className="self-end max-w-[75%] rounded-2xl px-5 py-3 text-base leading-relaxed bg-[#F5DEB3] text-[#1a1a1a]/50 italic">
                 {interimText || "Listening…"}
               </div>

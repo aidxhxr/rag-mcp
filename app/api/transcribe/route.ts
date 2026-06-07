@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 export async function POST(req: NextRequest) {
   const contentType = req.headers.get("content-type") ?? "audio/webm";
   const blob = await req.blob();
+  console.log("[transcribe] received blob size:", blob.size, "type:", contentType);
 
   if (!blob.size) {
     return NextResponse.json({ error: "No audio data" }, { status: 400 });
@@ -38,8 +39,10 @@ export async function POST(req: NextRequest) {
   const data = (await dgRes.json()) as {
     results?: { channels?: { alternatives?: { transcript: string }[] }[] };
   };
+  console.log("[transcribe] Deepgram raw response:", JSON.stringify(data));
   const transcript =
     data.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "";
+  console.log("[transcribe] transcript:", JSON.stringify(transcript));
 
   return NextResponse.json({ transcript });
 }

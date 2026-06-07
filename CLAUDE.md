@@ -10,9 +10,11 @@ An app where users upload books (PDF) and have voice-only conversations with the
 - [x] 2. PDF is downloaded server-side and parsed into raw text
 - [x] 3. Text is chunked, embedded (Voyage AI), and stored in pgvector
 - [x] 4. User opens a book and speaks a question
-- [~] 5. Speech is transcribed — MediaRecorder → /api/transcribe (Deepgram REST) → text. VAD implemented but STT pipeline not producing transcript text yet (see In Progress)
-- [~] 6. Transcription → embed → pgvector search → Voyage rerank → local LLM → answer bubble. Route exists, untested end-to-end
-- [~] 7. Answer → Deepgram Aura-2 TTS → audio playback. Route exists, untested end-to-end
+- [x] 5. Speech is transcribed — MediaRecorder → /api/transcribe (Deepgram nova-2 REST) → text
+- [x] 6. Transcription → embed → pgvector search → Voyage rerank → local LLM (streaming SSE) → answer bubble
+- [x] 7. Answer → Deepgram Aura-2 TTS (per sentence, concurrent fetches) → audio playback
+- [ ] Stripe payments + pricing page + webhook handler
+- [ ] Conversation history (store messages per book per user)
 
 ## Stack
 
@@ -71,14 +73,20 @@ Receives a raw audio Blob (audio/webm or audio/webm;codecs=opus), sends to Deepg
 - Implemented in `app/api/transcribe/route.ts` with raw fetch (no SDK)
 
 ### `POST /api/chat`
-Body: `{ book_id: string, query: string }`
+Body: `{ book_id: string, query: string }`  
+Returns: `text/event-stream` SSE with events `{ sentence: string }` and a final `{ done: true, answer: string }`
+
 1. Voyage-4 embed the query
 2. `match_book_chunks` RPC on Supabase (pgvector cosine similarity, top 20)
-3. Voyage rerank-2 (top 5)
-4. Local LLM inference (`Qwen3.6-35B-A3B-UD-Q4_K_XL` at `LOCAL_LLM_BASE_URL`)
-5. Returns `{ answer: string }`
-- Strips `<think>…</think>` blocks from Qwen3 output
-- Uses `/no_think` system prompt prefix to suppress extended thinking
+3. Voyage rerank-2 (top 3)
+4. Local LLM inference (`Qwen3.6-35B-A3B-UD-Q4_K_XL` at `LOCAL_LLM_BASE_URL`) — streamed
+5. Sentence boundaries detected server-side; each sentence emitted as an SSE event
+6. Final `{ done: true, answer: "<full text>" }` event closes the stream
+
+- `/no_think` in the **user** message (not system) to suppress Qwen3 extended thinking
+- Strips `<think>…</think>` inline tags as a safety net
+- Skips `reasoning_content` deltas (Qwen3's API-level thinking field)
+- Falls back to last paragraph of `reasoning_content` if `content` is empty
 
 ### `POST /api/speak`
 Body: `{ text: string, voice_id: string }`
@@ -106,51 +114,50 @@ This function has been created in Supabase already.
 
 ## ChatUI Architecture (`app/books/[book_id]/ChatUI.tsx`)
 
-Mic button → `startRecording()` → `getUserMedia` → `startSession(stream)`:
+Mic button → `startRecording()` → `getUserMedia` (AGC/noise-suppression/echo-cancellation OFF) → `startSession(stream)`:
 
 ```
 startSession:
   - Creates MediaRecorder (audio/webm;codecs=opus), no timeslice
   - Sets up AudioContext AnalyserNode for VAD (voice activity detection)
   - VAD polls every 100ms, starts after VAD_START_DELAY (400ms) to let mic settle
-  - Speech detected when RMS×100 > SPEECH_THRESHOLD (18) for >= SPEECH_MIN_MS (600ms)
+  - AudioContext.resume() called before VAD starts (required on some browsers)
+  - Speech detected when RMS×100 > SPEECH_THRESHOLD (5) for >= SPEECH_MIN_MS (600ms)
+  - speechStart timer does NOT reset on brief dips below threshold (normal between words)
   - After speech, silence of SILENCE_MS (2000ms) triggers recorder.stop()
   - recorder.onstop → sends full blob to /api/transcribe → on non-empty transcript:
-      setMessages([...prev, { role: "user", text }])
-      sendQuery(text) → /api/chat → answer bubble → /api/speak → Audio.play()
-  - After onstop completes, calls startSession(stream) again for next utterance
+      await sendQuery(text) → streams /api/chat SSE → concurrent TTS fetches per sentence
+                           → plays audio in order → restarts session
+  - startSession(stream) is called again only AFTER sendQuery fully resolves
+    (so mic never overlaps with model thinking or speaking)
+```
+
+### `sendQuery` streaming pipeline
+```
+fetch /api/chat (SSE stream)
+  → on each { sentence } event:
+      - fire fetch /api/speak immediately (concurrent, non-blocking)
+      - set isThinking=false, interimText="Speaking…" on first sentence
+  → on { done } event: capture fullAnswer
+after stream ends:
+  → play audio blobs in order (each await-ed sequentially)
+  → add book message bubble with fullAnswer
+  → clear interimText
+  → startSession restarts listening
 ```
 
 UI bubbles:
 - User messages: right-aligned, `bg-[#F5DEB3]` (wheat yellow)
 - Book messages: left-aligned, `bg-[#EDE5D0]` (beige)
 - Status bubble (right, italic, 50% opacity): shows "Listening…" / "Speaking…" / "Transcribing…"
-- Thinking bubble (left, italic): shows "Thinking…" while /api/chat is in flight
+  - Hidden while `isThinking` is true (so "Listening…" doesn't show during model inference)
+- Thinking bubble (left, italic): shows "Thinking…" while waiting for first SSE sentence
 
-## In Progress — STT Not Working
+## Known Issues / In Progress
 
-**Problem**: The mic button activates, status bubble shows "Listening…", but speech is never detected and/or transcript comes back empty. The user speaks but nothing is committed to the chat.
-
-**What's been tried and ruled out**:
-1. Browser WebSocket to Deepgram (`wss://api.deepgram.com`) → fails with 1006 (network blocks outgoing WebSocket on the school network)
-2. Chrome Web Speech API → also uses WebSocket to Google servers, same block — just returns `no-speech` immediately
-3. MediaRecorder with `timeslice` (3s chunks) → each non-first chunk is a headerless WebM frame; Deepgram returns 400 "corrupt or unsupported data"
-4. Current approach: MediaRecorder without timeslice + AudioContext VAD → full blob sent on silence. `/api/transcribe` returns 200 but transcript is empty, or VAD never triggers
-
-**Most likely remaining issues** (fix one at a time and test):
-- A) VAD threshold tuning: `SPEECH_THRESHOLD = 18` may be too high for the user's mic. Try logging `rms` values every second to find the right threshold. Add `console.log("[vad] rms:", rms.toFixed(1))` inside the VAD interval.
-- B) Empty transcript from Deepgram: the blob may be too short (< 1500 bytes size check), or Deepgram returns empty even with speech. Log `blob.size` and the raw Deepgram response in `/api/transcribe`.
-- C) Stale closure: `startSession` calls itself recursively from `recorder.onstop`. React re-renders between sessions may cause the inner `startSession` reference to be stale. Consider using a `useCallback` with `useRef` wrapper, or extract to a plain function outside the component.
-- D) AudioContext suspended: browsers require a user gesture to resume AudioContext. `new AudioContext()` created inside `startSession` (not inside the button click handler directly) may start in `suspended` state. Call `audioCtx.resume()` after creating it and await it before starting the VAD.
-
-**Suggested next step**: Add the following debug logs and report back what you see:
-```typescript
-// In startVad, before the setInterval:
-console.log("[vad] audioCtx state:", audioCtx.state);
-await audioCtx.resume();
-// Inside the setInterval callback:
-if (Math.random() < 0.1) console.log("[vad] rms:", rms.toFixed(1));
-```
+- **Qwen3 extended thinking**: The model at `loon.sccs.swarthmore.edu:11435` ignores `think: false` on the OpenAI-compatible endpoint and continues to generate `reasoning_content`. `/no_think` in the user message partially helps but the model may still think for a long time before producing `content`. The Ollama native `/api/chat` endpoint returns 404 on this server.
+  - Workaround: `max_tokens: 16384` gives enough budget for the model to finish reasoning and write content. `reasoning_content` deltas are skipped server-side.
+  - If `content` is still empty after full stream, the last paragraph of `reasoning_content` is used as fallback.
 
 ## Implementation Notes
 
@@ -167,11 +174,8 @@ if (Math.random() < 0.1) console.log("[vad] rms:", rms.toFixed(1));
 - **Do NOT use Deepgram browser WebSocket** — the school network blocks outgoing WebSocket connections to external hosts (1006 close, no reason). All Deepgram calls must be server-side via HTTPS REST
 - **Do NOT use Chrome Web Speech API** — also routed through Google WebSocket servers, same block
 - **MediaRecorder timeslice is broken for Deepgram**: chunks after the first lack the WebM header — Deepgram returns 400. Always record as one continuous blob and send on stop
-- Local LLM at `loon.sccs.swarthmore.edu:11435` uses OpenAI-compatible API (`/v1/chat/completions`). Model `Qwen3.6-35B-A3B-UD-Q4_K_XL` is always loaded. Use `/no_think` in system prompt and strip `<think>` tags from output
+- **getUserMedia must disable browser audio processing**: `echoCancellation: false, noiseSuppression: false, autoGainControl: false` — without this, AGC compresses the mic signal so much that VAD RMS values stay near zero even during speech
+- Local LLM at `loon.sccs.swarthmore.edu:11435` uses OpenAI-compatible API (`/v1/chat/completions`). Model `Qwen3.6-35B-A3B-UD-Q4_K_XL` is always loaded. Put `/no_think` at the start of the **user** message (not system prompt) to suppress extended thinking
 - Voice IDs stored in DB (`rachel`, `sarah`, `dave`, `daniel`, `chris`) map to Deepgram Aura-2 models in `VOICE_MAP` inside `app/api/speak/route.ts`
 - `NEXT_PUBLIC_DEEPGRAM_API_KEY` is set in `.env.local` but is no longer used (kept for reference). All Deepgram calls use server-only `DEEPGRAM_API_KEY`
-
-## Not Started
-- [ ] Stripe payments + pricing page + webhook handler
-- [ ] Conversation history (store messages per book per user)
-- [ ] Remove console.log debug statements from ChatUI once STT is confirmed working
+- `/api/chat` returns `text/event-stream` SSE, not JSON — the client must read it as a stream, not `res.json()`

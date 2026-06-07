@@ -7,9 +7,45 @@ const voyage = new VoyageAIClient({ apiKey: process.env.VOYAGE_API_KEY });
 const LLM_BASE = process.env.LOCAL_LLM_BASE_URL!;
 const LLM_MODEL = process.env.LOCAL_LLM_MODEL!;
 
-// Strip <think>…</think> blocks from Qwen3's extended-thinking mode
 function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
+// Split accumulated text on sentence boundaries. Returns [complete sentences, leftover].
+function extractSentences(buf: string): [string[], string] {
+  const sentences: string[] = [];
+  const re = /[.?!]+\s+(?=[A-Z])/g;
+  let last = 0;
+  while (re.exec(buf) !== null) {
+    const s = buf.slice(last, re.lastIndex).trim();
+    if (s) sentences.push(s);
+    last = re.lastIndex;
+  }
+  return [sentences, buf.slice(last)];
+}
+
+function sseStream(
+  fn: (emit: (event: object) => void) => Promise<void>
+): NextResponse {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    async start(controller) {
+      const emit = (event: object) =>
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      try {
+        await fn(emit);
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new NextResponse(body, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -20,38 +56,41 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { book_id, query } = await req.json();
-  if (!book_id || !query) {
+  if (!book_id || !query)
     return NextResponse.json({ error: "Missing book_id or query" }, { status: 400 });
-  }
 
-  // 1. Embed the query (must match the model used when chunking)
+  // 1. Embed
   const embedRes = await voyage.embed({ input: [query], model: "voyage-4" });
   const queryEmbedding = embedRes.data![0].embedding!;
 
-  // 2. Vector search — top 20 chunks
-  const { data: chunks, error: rpcError } = await supabase.rpc(
-    "match_book_chunks",
-    { query_embedding: queryEmbedding, match_book_id: book_id, match_count: 20 }
-  );
+  // 2. Vector search — top 20
+  const { data: chunks, error: rpcError } = await supabase.rpc("match_book_chunks", {
+    query_embedding: queryEmbedding,
+    match_book_id: book_id,
+    match_count: 20,
+  });
   if (rpcError) return NextResponse.json({ error: rpcError.message }, { status: 500 });
+
+  const FALLBACK = "I couldn't find any relevant passages in this book.";
   if (!chunks || chunks.length === 0) {
-    return NextResponse.json({
-      answer: "I couldn't find any relevant passages in this book.",
+    return sseStream(async (emit) => {
+      emit({ sentence: FALLBACK });
+      emit({ done: true, answer: FALLBACK });
     });
   }
 
-  // 3. Rerank — top 5 via Voyage AI
+  // 3. Rerank — top 3
   const rerankRes = await voyage.rerank({
     query,
     documents: (chunks as { content: string }[]).map((c) => c.content),
     model: "rerank-2",
-    topK: 5,
+    topK: 3,
   });
   const topChunks = (rerankRes.data ?? []).map(
-    (r: { index: number }) => (chunks as { content: string }[])[r.index].content
+    (r) => (chunks as { content: string }[])[r.index!].content
   );
 
-  // 4. Local LLM inference — Qwen3.6-35B
+  // 4. LLM — streaming SSE
   const context = topChunks.join("\n\n---\n\n");
   const llmRes = await fetch(`${LLM_BASE}/v1/chat/completions`, {
     method: "POST",
@@ -59,6 +98,7 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({
       model: LLM_MODEL,
       max_tokens: 16384,
+      stream: true,
       messages: [
         {
           role: "system",
@@ -67,7 +107,7 @@ export async function POST(req: NextRequest) {
         },
         {
           role: "user",
-          content: `Book excerpts:\n${context}\n\nQuestion: ${query}`,
+          content: `/no_think\nBook excerpts:\n${context}\n\nQuestion: ${query}`,
         },
       ],
     }),
@@ -77,21 +117,76 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: await llmRes.text() }, { status: 502 });
   }
 
-  const llmData = (await llmRes.json()) as {
-    choices: { finish_reason: string; message: { content: string; reasoning_content?: string } }[];
-  };
-  const choice = llmData.choices[0];
-  console.log("[chat] finish_reason:", choice?.finish_reason, "content length:", choice?.message?.content?.length ?? 0);
+  return sseStream(async (emit) => {
+    const reader = llmRes.body!.getReader();
+    const dec = new TextDecoder();
+    let llmBuf = "";
+    let textBuf = "";
+    let fullAnswer = "";
+    let inThink = false;
 
-  const raw = choice?.message?.content ?? "";
-  let answer = stripThinking(raw);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-  // Fallback: extract last paragraph from reasoning if content came back empty
-  if (!answer && choice?.message?.reasoning_content) {
-    const paragraphs = choice.message.reasoning_content.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
-    answer = paragraphs[paragraphs.length - 1] ?? "";
-    if (answer) console.warn("[chat] using reasoning_content fallback");
-  }
+      llmBuf += dec.decode(value, { stream: true });
+      const lines = llmBuf.split("\n");
+      llmBuf = lines.pop() ?? "";
 
-  return NextResponse.json({ answer: answer || "I'm not sure — I couldn't find a clear answer in this book." });
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6).trim();
+        if (payload === "[DONE]") continue;
+
+        let delta: { content?: string; reasoning_content?: string } | undefined;
+        try {
+          const parsed = JSON.parse(payload) as {
+            choices: { delta: { content?: string; reasoning_content?: string } }[];
+          };
+          delta = parsed.choices[0]?.delta;
+        } catch {
+          continue;
+        }
+
+        // Skip reasoning-only tokens
+        if (delta?.reasoning_content !== undefined && !delta.content) continue;
+
+        let token = delta?.content ?? "";
+        if (!token) continue;
+
+        // Handle inline <think> tags as safety net
+        if (token.includes("<think>")) inThink = true;
+        if (token.includes("</think>")) {
+          inThink = false;
+          token = token.replace(/<\/think>/g, "");
+        }
+        if (inThink) continue;
+
+        textBuf += token;
+        const [sentences, remainder] = extractSentences(textBuf);
+        textBuf = remainder;
+
+        for (const s of sentences) {
+          const clean = stripThinking(s);
+          if (!clean) continue;
+          fullAnswer += (fullAnswer ? " " : "") + clean;
+          emit({ sentence: clean });
+        }
+      }
+    }
+
+    // Flush remainder
+    const leftover = stripThinking(textBuf.trim());
+    if (leftover) {
+      fullAnswer += (fullAnswer ? " " : "") + leftover;
+      emit({ sentence: leftover });
+    }
+
+    if (!fullAnswer) {
+      emit({ sentence: FALLBACK });
+      fullAnswer = FALLBACK;
+    }
+
+    emit({ done: true, answer: fullAnswer });
+  });
 }

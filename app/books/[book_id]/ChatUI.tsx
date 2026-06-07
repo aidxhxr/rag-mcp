@@ -17,7 +17,7 @@ type Message = {
   text: string;
 };
 
-const SPEECH_THRESHOLD = 18;   // RMS × 100 that counts as speech (raise if too sensitive)
+const SPEECH_THRESHOLD = 5;    // RMS × 100 that counts as speech (raise if too sensitive)
 const SPEECH_MIN_MS = 600;     // must speak for at least this long before committing
 const SILENCE_MS = 2000;       // ms of quiet after speech before committing
 const VAD_START_DELAY = 400;   // ms to wait after recorder starts before VAD polls (mic settle)
@@ -58,24 +58,36 @@ export default function ChatUI({ book }: { book: Book }) {
       });
       if (!chatRes.ok) throw new Error(await chatRes.text());
       const { answer } = (await chatRes.json()) as { answer: string };
-      setMessages((prev) => [
-        ...prev,
-        { id: crypto.randomUUID(), role: "book", text: answer },
-      ]);
       setIsThinking(false);
-      void (async () => {
-        const speakRes = await fetch("/api/speak", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: answer, voice_id: book.voiceId }),
-        });
-        if (!speakRes.ok) return;
-        const audioBlob = await speakRes.blob();
-        const url = URL.createObjectURL(audioBlob);
-        const audio = new Audio(url);
-        audio.play().catch(console.error);
-        audio.onended = () => URL.revokeObjectURL(url);
-      })();
+      if (answer) {
+        setMessages((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), role: "book", text: answer },
+        ]);
+        setInterimText("Speaking…");
+        try {
+          const speakRes = await fetch("/api/speak", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: answer, voice_id: book.voiceId }),
+          });
+          if (speakRes.ok) {
+            const audioBlob = await speakRes.blob();
+            const url = URL.createObjectURL(audioBlob);
+            const audio = new Audio(url);
+            await new Promise<void>((resolve) => {
+              audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+              audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+              audio.play().catch(() => resolve());
+            });
+          } else {
+            console.error("[speak] error:", await speakRes.text());
+          }
+        } catch (err) {
+          console.error("[speak]", err);
+        }
+        setInterimText("");
+      }
     } catch (err) {
       console.error("[chat]", err);
       setIsThinking(false);
@@ -108,6 +120,7 @@ export default function ChatUI({ book }: { book: Book }) {
       }
 
       const blob = new Blob(chunks, { type: mimeType });
+      console.log("[transcribe] blob size:", blob.size, "bytes, type:", mimeType);
       if (blob.size > 1500) {
         setInterimText("Transcribing…");
         try {
@@ -145,7 +158,9 @@ export default function ChatUI({ book }: { book: Book }) {
     if (vadRef.current) clearInterval(vadRef.current);
 
     // Delay VAD polling so mic transient noise at startup doesn't trigger speech
-    const startVad = () => {
+    const startVad = async () => {
+      console.log("[vad] audioCtx state:", audioCtx.state);
+      await audioCtx.resume();
       vadRef.current = setInterval(() => {
         if (!isRecordingRef.current) {
           clearInterval(vadRef.current!);
@@ -161,6 +176,7 @@ export default function ChatUI({ book }: { book: Book }) {
           sum += x * x;
         }
         const rms = Math.sqrt(sum / data.length) * 100;
+        console.log("[vad] rms:", rms.toFixed(1));
 
         if (rms > SPEECH_THRESHOLD) {
           if (!speechStart) speechStart = Date.now();
@@ -171,7 +187,6 @@ export default function ChatUI({ book }: { book: Book }) {
           silenceStart = null;
           if (hasSpeech) setInterimText("Speaking…");
         } else {
-          speechStart = null;
           if (hasSpeech) {
             if (silenceStart === null) silenceStart = Date.now();
             else if (Date.now() - silenceStart >= SILENCE_MS) {
@@ -191,7 +206,9 @@ export default function ChatUI({ book }: { book: Book }) {
   const startRecording = async () => {
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
       streamRef.current = stream;
     } catch (err) {
       console.error("[mic] getUserMedia failed:", err);

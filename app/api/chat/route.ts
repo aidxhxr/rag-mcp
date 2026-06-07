@@ -58,13 +58,12 @@ export async function POST(req: NextRequest) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: LLM_MODEL,
-      max_tokens: 4096,
+      max_tokens: 16384,
       messages: [
         {
-          // /no_think suppresses Qwen3's extended-thinking mode
           role: "system",
           content:
-            "/no_think\nYou are the voice of a book speaking directly to a reader. Answer using only the excerpts provided. Be concise and conversational — your response will be read aloud.",
+            "You are the voice of a book speaking directly to a reader. Answer using only the excerpts provided. Be concise and conversational — your response will be read aloud.",
         },
         {
           role: "user",
@@ -82,11 +81,17 @@ export async function POST(req: NextRequest) {
     choices: { finish_reason: string; message: { content: string; reasoning_content?: string } }[];
   };
   const choice = llmData.choices[0];
-  if (choice?.finish_reason === "length") {
-    console.warn("[chat] hit max_tokens during reasoning — reasoning_content length:", choice.message.reasoning_content?.length ?? 0);
-  }
+  console.log("[chat] finish_reason:", choice?.finish_reason, "content length:", choice?.message?.content?.length ?? 0);
+
   const raw = choice?.message?.content ?? "";
-  const answer = stripThinking(raw);
+  let answer = stripThinking(raw);
+
+  // Fallback: extract last paragraph from reasoning if content came back empty
+  if (!answer && choice?.message?.reasoning_content) {
+    const paragraphs = choice.message.reasoning_content.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
+    answer = paragraphs[paragraphs.length - 1] ?? "";
+    if (answer) console.warn("[chat] using reasoning_content fallback");
+  }
 
   return NextResponse.json({ answer: answer || "I'm not sure — I couldn't find a clear answer in this book." });
 }

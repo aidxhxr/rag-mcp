@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: LLM_MODEL,
-      max_tokens: 512,
+      max_tokens: 4096,
       messages: [
         {
           // /no_think suppresses Qwen3's extended-thinking mode
@@ -79,10 +79,14 @@ export async function POST(req: NextRequest) {
   }
 
   const llmData = (await llmRes.json()) as {
-    choices: { message: { content: string } }[];
+    choices: { finish_reason: string; message: { content: string; reasoning_content?: string } }[];
   };
-  const raw = llmData.choices[0]?.message?.content ?? "";
+  const choice = llmData.choices[0];
+  if (choice?.finish_reason === "length") {
+    console.warn("[chat] hit max_tokens during reasoning — reasoning_content length:", choice.message.reasoning_content?.length ?? 0);
+  }
+  const raw = choice?.message?.content ?? "";
   const answer = stripThinking(raw);
 
-  return NextResponse.json({ answer });
+  return NextResponse.json({ answer: answer || "I'm not sure — I couldn't find a clear answer in this book." });
 }
